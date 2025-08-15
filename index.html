@@ -268,50 +268,89 @@ async function uploadFile(file){
     return;
   }
 
-  const arrayBuf = await file.arrayBuffer();
-  const b64 = toBase64(arrayBuf);
-  const filename = fileSafeName(file.name || 'model.html');
+  try {
+    // First, test repository access
+    els.status.textContent = 'Checking repository access...';
+    const repoTest = await gh(`/repos/${GH_OWNER}/${GH_REPO}`);
+    if (!repoTest.ok) {
+      const repoError = await repoTest.json().catch(() => ({}));
+      els.status.textContent = `Repository access failed (${repoTest.status}): ${repoError.message || 'Repository not found or no access'}. Check: 1) Repository exists 2) Token has repo permissions 3) Repository name is correct`;
+      return;
+    }
 
-  // check if file exists to pass sha for update
-  let existingSha = null;
-  const head = await gh(`/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filename)}`);
-  if(head.ok){
-    const meta = await head.json();
-    existingSha = meta.sha;
+    els.status.textContent = 'Processing file...';
+    const arrayBuf = await file.arrayBuffer();
+    const b64 = toBase64(arrayBuf);
+    const filename = fileSafeName(file.name || 'model.html');
+
+    // check if file exists to pass sha for update
+    els.status.textContent = 'Checking if file exists...';
+    let existingSha = null;
+    const head = await gh(`/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filename)}`);
+    if(head.ok){
+      const meta = await head.json();
+      existingSha = meta.sha;
+      els.status.textContent = 'Updating existing file...';
+    } else {
+      els.status.textContent = 'Creating new file...';
+    }
+
+    const username = getUsername();
+    const message = existingSha
+      ? `Update ${filename} by ${username || 'unknown'}`
+      : `Add ${filename} by ${username || 'unknown'}`;
+
+    const body = {
+      message,
+      content: b64,
+      branch: 'main'
+    };
+    if(existingSha) body.sha = existingSha;
+
+    els.status.textContent = 'Uploading to GitHub...';
+    const put = await gh(`/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filename)}`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+
+    if(!put.ok){
+      const err = await put.json().catch(()=>({}));
+      let errorMsg = `Upload failed (${put.status}): ${err.message || 'Unknown error'}`;
+      
+      // Provide specific guidance based on error
+      if (put.status === 404) {
+        errorMsg += '. Check: 1) Repository exists 2) Token has "repo" permissions 3) Repository name/owner is correct';
+      } else if (put.status === 401) {
+        errorMsg += '. Token is invalid or expired';
+      } else if (put.status === 403) {
+        errorMsg += '. Token lacks required permissions - needs "repo" scope';
+      } else if (put.status === 409) {
+        errorMsg += '. File conflict - try refreshing and uploading again';
+      }
+      
+      els.status.textContent = errorMsg;
+      console.error('GitHub API Error:', {
+        status: put.status,
+        error: err,
+        repo: `${GH_OWNER}/${GH_REPO}`,
+        filename: filename
+      });
+      return;
+    }
+
+    els.status.textContent = 'Uploaded ✔';
+    const url = PAGES_BASE + encodeURIComponent(filename);
+    els.shareUrl.value = url;
+    els.afterUpload.style.display = '';
+    els.openBtn.href = url;
+
+    // refresh recent list
+    renderRecent();
+  } catch (error) {
+    els.status.textContent = 'Upload error: ' + error.message;
+    console.error('Upload error:', error);
   }
-
-  const username = getUsername();
-  const message = existingSha
-    ? `Update ${filename} by ${username || 'unknown'}`
-    : `Add ${filename} by ${username || 'unknown'}`;
-
-  const body = {
-    message,
-    content: b64,
-    branch: 'main'
-  };
-  if(existingSha) body.sha = existingSha;
-
-  const put = await gh(`/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filename)}`, {
-    method:'PUT',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-
-  if(!put.ok){
-    const err = await put.json().catch(()=>({}));
-    els.status.textContent = 'Upload failed: ' + (err.message || put.status);
-    return;
-  }
-
-  els.status.textContent = 'Uploaded ✔';
-  const url = PAGES_BASE + encodeURIComponent(filename);
-  els.shareUrl.value = url;
-  els.afterUpload.style.display = '';
-  els.openBtn.href = url;
-
-  // refresh recent list
-  renderRecent();
 }
 
 /* ---------- UI wiring ---------- */
