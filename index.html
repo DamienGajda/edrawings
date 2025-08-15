@@ -203,15 +203,49 @@ async function saveToken(){
     if (response.ok) {
       const userData = await response.json();
       
-      // Save token and username
+      // Show detected GitHub username
+      els.status.textContent = `Detected GitHub username: ${userData.login}. Checking repository access...`;
+      
+      // Test repository access with the detected username
+      const repoTestUrl = `/repos/${userData.login}/${GH_REPO}`;
+      const repoResponse = await fetch(`https://api.github.com${repoTestUrl}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json'
+        }
+      });
+
+      let finalOwner = GH_OWNER;
+      if (repoResponse.ok) {
+        els.status.textContent = `✓ Repository access confirmed: ${userData.login}/${GH_REPO}`;
+        finalOwner = userData.login;
+      } else {
+        // Test with configured owner
+        const configRepoResponse = await fetch(`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json'
+          }
+        });
+        
+        if (configRepoResponse.ok) {
+          els.status.textContent = `✓ Repository access confirmed: ${GH_OWNER}/${GH_REPO}`;
+        } else {
+          els.status.textContent = `⚠️ Cannot access either ${userData.login}/${GH_REPO} or ${GH_OWNER}/${GH_REPO}. Please create the repository or check permissions.`;
+        }
+      }
+      
+      // Save token, detected username, and update config if needed
       setToken(token);
       const displayName = username || userData.login;
       setUsername(displayName);
       
+      // Store the working owner for uploads
+      localStorage.setItem('working_owner', finalOwner);
+      
       // Update UI
       setSignedIn(displayName);
       els.authModal.style.display = 'none';
-      els.status.textContent = 'Successfully signed in!';
       
       // Refresh the recent uploads
       renderRecent();
@@ -269,12 +303,15 @@ async function uploadFile(file){
   }
 
   try {
+    // Use the working owner (detected during login)
+    const workingOwner = localStorage.getItem('working_owner') || GH_OWNER;
+    
     // First, test repository access
     els.status.textContent = 'Checking repository access...';
-    const repoTest = await gh(`/repos/${GH_OWNER}/${GH_REPO}`);
+    const repoTest = await gh(`/repos/${workingOwner}/${GH_REPO}`);
     if (!repoTest.ok) {
       const repoError = await repoTest.json().catch(() => ({}));
-      els.status.textContent = `Repository access failed (${repoTest.status}): ${repoError.message || 'Repository not found or no access'}. Check: 1) Repository exists 2) Token has repo permissions 3) Repository name is correct`;
+      els.status.textContent = `Repository access failed (${repoTest.status}): ${repoError.message || 'Repository not found or no access'}. Repository: ${workingOwner}/${GH_REPO}`;
       return;
     }
 
@@ -286,7 +323,7 @@ async function uploadFile(file){
     // check if file exists to pass sha for update
     els.status.textContent = 'Checking if file exists...';
     let existingSha = null;
-    const head = await gh(`/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filename)}`);
+    const head = await gh(`/repos/${workingOwner}/${GH_REPO}/contents/${encodeURIComponent(filename)}`);
     if(head.ok){
       const meta = await head.json();
       existingSha = meta.sha;
@@ -308,7 +345,7 @@ async function uploadFile(file){
     if(existingSha) body.sha = existingSha;
 
     els.status.textContent = 'Uploading to GitHub...';
-    const put = await gh(`/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filename)}`, {
+    const put = await gh(`/repos/${workingOwner}/${GH_REPO}/contents/${encodeURIComponent(filename)}`, {
       method:'PUT',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body)
@@ -320,7 +357,7 @@ async function uploadFile(file){
       
       // Provide specific guidance based on error
       if (put.status === 404) {
-        errorMsg += '. Check: 1) Repository exists 2) Token has "repo" permissions 3) Repository name/owner is correct';
+        errorMsg += `. Repository: ${workingOwner}/${GH_REPO}. Check: 1) Repository exists 2) Token has "repo" permissions 3) Repository name is correct`;
       } else if (put.status === 401) {
         errorMsg += '. Token is invalid or expired';
       } else if (put.status === 403) {
@@ -333,17 +370,18 @@ async function uploadFile(file){
       console.error('GitHub API Error:', {
         status: put.status,
         error: err,
-        repo: `${GH_OWNER}/${GH_REPO}`,
+        repo: `${workingOwner}/${GH_REPO}`,
         filename: filename
       });
       return;
     }
 
     els.status.textContent = 'Uploaded ✔';
-    const url = PAGES_BASE + encodeURIComponent(filename);
-    els.shareUrl.value = url;
+    // Use the working owner for the Pages URL too
+    const pagesUrl = `https://${workingOwner.toLowerCase()}.github.io/${GH_REPO}/${encodeURIComponent(filename)}`;
+    els.shareUrl.value = pagesUrl;
     els.afterUpload.style.display = '';
-    els.openBtn.href = url;
+    els.openBtn.href = pagesUrl;
 
     // refresh recent list
     renderRecent();
